@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Canvas as FabricCanvas, Circle, Rect } from "fabric";
+import { Canvas as FabricCanvas, Circle, Rect, PencilBrush } from "fabric";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 
@@ -32,8 +32,14 @@ export const CanvasBoard = () => {
       backgroundColor: bgColor,
     });
 
-    fabric.freeDrawingBrush.color = color;
-    fabric.freeDrawingBrush.width = width;
+    fabric.isDrawingMode = tool === "draw";
+    if (!fabric.freeDrawingBrush) {
+      fabric.freeDrawingBrush = new PencilBrush(fabric);
+    }
+    if (fabric.freeDrawingBrush) {
+      fabric.freeDrawingBrush.color = color;
+      fabric.freeDrawingBrush.width = width;
+    }
 
     setCanvas(fabric);
     toast.success("Canvas ready! Use your stylus or mouse to write.");
@@ -68,7 +74,10 @@ export const CanvasBoard = () => {
   useEffect(() => {
     if (!canvas) return;
     canvas.isDrawingMode = tool === "draw";
-    if (canvas.isDrawingMode) {
+    if (!canvas.freeDrawingBrush) {
+      canvas.freeDrawingBrush = new PencilBrush(canvas);
+    }
+    if (canvas.freeDrawingBrush) {
       canvas.freeDrawingBrush.color = color;
       canvas.freeDrawingBrush.width = width;
     }
