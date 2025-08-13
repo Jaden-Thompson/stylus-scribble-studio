@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Canvas as FabricCanvas, Circle, Rect, Path as FabricPath, ActiveSelection } from "fabric";
 import getStroke from "perfect-freehand";
+import { Button } from "@/components/ui/button";
+import { Slider } from "@/components/ui/slider";
+import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
-import { CanvasToolbar } from "./CanvasToolbar";
-import { LayerPanel, Layer } from "./LayerPanel";
-import { ZoomPanControls } from "./ZoomPanControls";
-import { MiniMap } from "./MiniMap";
+import { PenLine, MousePointer, Square, Circle as CircleIcon, Undo2, Download, Trash2, Lasso } from "lucide-react";
 
 export type Tool = "select" | "draw" | "rectangle" | "circle" | "lasso";
 
@@ -33,19 +33,6 @@ export const CanvasBoard = () => {
   const [color, setColor] = useState<string>("#3b82f6");
   const [width, setWidth] = useState<number>(6);
   const [smoothing, setSmoothing] = useState<number>(0.6);
-  
-  // Zoom & Pan state
-  const [zoom, setZoom] = useState<number>(1);
-  const [panX, setPanX] = useState<number>(0);
-  const [panY, setPanY] = useState<number>(0);
-  const [isPanning, setIsPanning] = useState<boolean>(false);
-  const [showMiniMap, setShowMiniMap] = useState<boolean>(true);
-  
-  // Layer state
-  const [layers, setLayers] = useState<Layer[]>([
-    { id: "layer-1", name: "Layer 1", visible: true, locked: false, objects: [] }
-  ]);
-  const [activeLayerId, setActiveLayerId] = useState<string>("layer-1");
 
   const pointsRef = useRef<Pt[]>([]);
   const drawingRef = useRef(false);
@@ -87,46 +74,34 @@ export const CanvasBoard = () => {
     const overlay = overlayRef.current;
     if (!fabric || !container || !overlay) return;
 
-    let resizeTimeout: NodeJS.Timeout;
     const resize = () => {
-      clearTimeout(resizeTimeout);
-      resizeTimeout = setTimeout(() => {
-        const rect = container.getBoundingClientRect();
-        const w = rect.width;
-        const h = Math.max(420, rect.width * 0.625);
+      const rect = container.getBoundingClientRect();
+      const w = rect.width;
+      const h = Math.max(420, rect.width * 0.625);
 
-        fabric.setDimensions({ width: w, height: h });
+      fabric.setDimensions({ width: w, height: h });
 
-        const ratio = Math.max(window.devicePixelRatio || 1, 1);
-        overlay.width = Math.floor(w * ratio);
-        overlay.height = Math.floor(h * ratio);
-        overlay.style.width = `${w}px`;
-        overlay.style.height = `${h}px`;
+      const ratio = Math.max(window.devicePixelRatio || 1, 1);
+      overlay.width = Math.floor(w * ratio);
+      overlay.height = Math.floor(h * ratio);
+      overlay.style.width = `${w}px`;
+      overlay.style.height = `${h}px`;
 
-        const ctx = overlayCtxRef.current;
-        if (ctx) {
-          ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-          ctx.clearRect(0, 0, w, h);
-        }
-        fabric.renderAll();
-      }, 100);
+      const ctx = overlayCtxRef.current;
+      if (ctx) {
+        ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+        ctx.clearRect(0, 0, w, h);
+      }
+      fabric.renderAll();
     };
 
     resize();
-    const ro = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        if (entry.contentBoxSize) {
-          resize();
-          break;
-        }
-      }
-    });
+    const ro = new ResizeObserver(resize);
     ro.observe(container);
     window.addEventListener("resize", resize);
     return () => {
       ro.disconnect();
       window.removeEventListener("resize", resize);
-      clearTimeout(resizeTimeout);
     };
   }, []);
 
@@ -146,85 +121,6 @@ export const CanvasBoard = () => {
     fabric.renderAll();
   }, [tool]);
 
-  // Zoom & Pan functionality with throttling
-  useEffect(() => {
-    const fabric = fabricCanvasRef.current;
-    if (!fabric) return;
-
-    let transformTimeout: NodeJS.Timeout;
-    const updateTransform = () => {
-      clearTimeout(transformTimeout);
-      transformTimeout = setTimeout(() => {
-        fabric.setViewportTransform([zoom, 0, 0, zoom, panX, panY]);
-        fabric.renderAll();
-      }, 16); // ~60fps
-    };
-
-    updateTransform();
-    return () => clearTimeout(transformTimeout);
-  }, [zoom, panX, panY]);
-
-  // Keyboard controls for pan and zoom
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.code === "Space" && !isPanning && !drawingRef.current) {
-        e.preventDefault();
-        setIsPanning(true);
-        const fabric = fabricCanvasRef.current;
-        if (fabric) {
-          fabric.defaultCursor = "grab";
-          fabric.skipTargetFind = true;
-        }
-      }
-    };
-
-    const handleKeyUp = (e: KeyboardEvent) => {
-      if (e.code === "Space" && isPanning) {
-        e.preventDefault();
-        setIsPanning(false);
-        const fabric = fabricCanvasRef.current;
-        if (fabric) {
-          fabric.defaultCursor = tool === "draw" ? "crosshair" : "default";
-          fabric.skipTargetFind = tool === "draw" || tool === "lasso";
-        }
-      }
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    window.addEventListener("keyup", handleKeyUp);
-
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("keyup", handleKeyUp);
-    };
-  }, [isPanning, tool]);
-
-  // Mouse wheel zoom with throttling
-  useEffect(() => {
-    const fabric = fabricCanvasRef.current;
-    if (!fabric) return;
-
-    let wheelTimeout: NodeJS.Timeout;
-    const handleWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      clearTimeout(wheelTimeout);
-      wheelTimeout = setTimeout(() => {
-        const delta = e.deltaY;
-        const zoomStep = 0.1;
-        const newZoom = Math.max(0.1, Math.min(5, zoom + (delta > 0 ? -zoomStep : zoomStep)));
-        setZoom(newZoom);
-      }, 16);
-    };
-
-    const canvas = fabric.upperCanvasEl;
-    canvas.addEventListener("wheel", handleWheel, { passive: false });
-
-    return () => {
-      canvas.removeEventListener("wheel", handleWheel);
-      clearTimeout(wheelTimeout);
-    };
-  }, [zoom]);
-
   // Pointer drawing with low-latency RAF and smoothing
   useEffect(() => {
     const overlay = overlayRef.current;
@@ -239,17 +135,8 @@ export const CanvasBoard = () => {
 
     const drawPreview = () => {
       const pts = pointsRef.current;
-      if (!pts.length || !drawingRef.current) return;
-      
-      const canvas = overlayRef.current;
-      const rect = canvas?.getBoundingClientRect();
-      if (!canvas || !rect) return;
-
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      
-      // Only calculate stroke if we have enough points
-      if (pts.length < 2) return;
-      
+      if (!pts.length) return;
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
       const stroke = getStroke(
         pts.map((p) => [p.x, p.y, p.pressure] as [number, number, number]),
         {
@@ -261,9 +148,7 @@ export const CanvasBoard = () => {
           simulatePressure: false,
         }
       );
-      
       if (!stroke.length) return;
-      
       ctx.fillStyle = color;
       ctx.beginPath();
       ctx.moveTo(stroke[0][0], stroke[0][1]);
@@ -272,16 +157,11 @@ export const CanvasBoard = () => {
       }
       ctx.closePath();
       ctx.fill();
+      rafRef.current = requestAnimationFrame(drawPreview);
     };
 
     const onPointerDown = (e: PointerEvent) => {
-      if (isPanning) {
-        overlay.setPointerCapture?.(e.pointerId);
-        drawingRef.current = true;
-        const { x, y } = getPos(e);
-        pointsRef.current = [{ x, y, pressure: 0.5, t: e.timeStamp }];
-        e.preventDefault();
-      } else if (tool === "draw") {
+      if (tool === "draw") {
         overlay.setPointerCapture?.(e.pointerId);
         drawingRef.current = true;
         pointsRef.current = [];
@@ -289,7 +169,7 @@ export const CanvasBoard = () => {
         pointsRef.current.push({ x, y, pressure: e.pressure || 0.5, t: e.timeStamp });
         ctx.clearRect(0, 0, overlay.width, overlay.height);
         if (rafRef.current) cancelAnimationFrame(rafRef.current);
-        drawPreview();
+        rafRef.current = requestAnimationFrame(drawPreview);
         e.preventDefault();
       } else if (tool === "lasso") {
         overlay.setPointerCapture?.(e.pointerId);
@@ -304,20 +184,8 @@ export const CanvasBoard = () => {
     const onPointerMove = (e: PointerEvent) => {
       if (!drawingRef.current) return;
       const { x, y } = getPos(e);
-      if (isPanning) {
-        const lastPoint = pointsRef.current[pointsRef.current.length - 1];
-        if (lastPoint) {
-          const deltaX = x - lastPoint.x;
-          const deltaY = y - lastPoint.y;
-          setPanX(prev => prev + deltaX);
-          setPanY(prev => prev + deltaY);
-        }
-        pointsRef.current = [{ x, y, pressure: 0.5, t: e.timeStamp }];
-      } else if (tool === "draw") {
+      if (tool === "draw") {
         pointsRef.current.push({ x, y, pressure: e.pressure || 0.5, t: e.timeStamp });
-        // Throttle preview updates for better performance
-        if (rafRef.current) cancelAnimationFrame(rafRef.current);
-        rafRef.current = requestAnimationFrame(drawPreview);
       } else if (tool === "lasso") {
         pointsRef.current.push({ x, y, pressure: 0.5, t: e.timeStamp });
         // Draw lasso preview
@@ -340,10 +208,8 @@ export const CanvasBoard = () => {
     const finalizeStroke = () => {
       const pts = pointsRef.current;
       drawingRef.current = false;
-      if (rafRef.current) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
       ctx.clearRect(0, 0, overlay.width, overlay.height);
       if (pts.length < 2) return;
 
@@ -412,10 +278,7 @@ export const CanvasBoard = () => {
     };
 
     const onPointerUp = (e: PointerEvent) => {
-      if (isPanning) {
-        drawingRef.current = false;
-        overlay.releasePointerCapture?.(e.pointerId);
-      } else if (tool === "draw") {
+      if (tool === "draw") {
         finalizeStroke();
         overlay.releasePointerCapture?.(e.pointerId);
       } else if (tool === "lasso") {
@@ -434,70 +297,7 @@ export const CanvasBoard = () => {
       window.removeEventListener("pointerup", onPointerUp);
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
     };
-  }, [tool, color, width, smoothing, isPanning]);
-
-  // Zoom controls
-  const handleZoomIn = useCallback(() => setZoom(prev => Math.min(5, prev + 0.2)), []);
-  const handleZoomOut = useCallback(() => setZoom(prev => Math.max(0.1, prev - 0.2)), []);
-  const handleResetView = useCallback(() => {
-    setZoom(1);
-    setPanX(0);
-    setPanY(0);
-  }, []);
-  const handleFitToCanvas = useCallback(() => {
-    const fabric = fabricCanvasRef.current;
-    if (!fabric) return;
-    setZoom(1);
-    setPanX(0);
-    setPanY(0);
-  }, []);
-
-  const handleViewportChange = useCallback((x: number, y: number) => {
-    setPanX(x);
-    setPanY(y);
-  }, []);
-
-  // Layer management
-  const handleLayerSelect = useCallback((id: string) => {
-    setActiveLayerId(id);
-  }, []);
-
-  const handleLayerAdd = useCallback(() => {
-    const newLayer: Layer = {
-      id: `layer-${Date.now()}`,
-      name: `Layer ${layers.length + 1}`,
-      visible: true,
-      locked: false,
-      objects: []
-    };
-    setLayers(prev => [...prev, newLayer]);
-    setActiveLayerId(newLayer.id);
-  }, [layers.length]);
-
-  const handleLayerDelete = useCallback((id: string) => {
-    if (layers.length <= 1) return;
-    setLayers(prev => prev.filter(l => l.id !== id));
-    if (activeLayerId === id) {
-      setActiveLayerId(layers.find(l => l.id !== id)?.id || layers[0].id);
-    }
-  }, [layers, activeLayerId]);
-
-  const handleLayerToggleVisible = useCallback((id: string) => {
-    setLayers(prev => prev.map(l => l.id === id ? { ...l, visible: !l.visible } : l));
-  }, []);
-
-  const handleLayerToggleLock = useCallback((id: string) => {
-    setLayers(prev => prev.map(l => l.id === id ? { ...l, locked: !l.locked } : l));
-  }, []);
-
-  const handleLayerReorder = useCallback((fromIndex: number, toIndex: number) => {
-    setLayers(prev => {
-      const newLayers = [...prev];
-      const [moved] = newLayers.splice(fromIndex, 1);
-      newLayers.splice(toIndex, 0, moved);
-      return newLayers;
-    });
-  }, []);
+  }, [tool, color, width, smoothing]);
 
   const addRect = () => {
     const canvas = fabricCanvasRef.current;
@@ -552,65 +352,55 @@ export const CanvasBoard = () => {
 
   return (
     <section className="w-full">
-      <CanvasToolbar
-        tool={tool}
-        setTool={setTool}
-        color={color}
-        setColor={setColor}
-        width={width}
-        setWidth={setWidth}
-        smoothing={smoothing}
-        setSmoothing={setSmoothing}
-        onAddRect={addRect}
-        onAddCircle={addCircle}
-        onUndo={undo}
-        onClearAll={clearAll}
-        onExport={exportPNG}
-      />
-
-      <div className="flex gap-4">
-        <div className="flex-1">
-          <div ref={containerRef} className="relative w-full rounded-lg border bg-card shadow-elegant overflow-hidden">
-            <canvas ref={fabricElRef} className="block w-full h-auto" />
-            <canvas ref={overlayRef} className="absolute inset-0 block" />
-          </div>
-          
-          <div className="mt-4 flex items-center justify-between">
-            <ZoomPanControls
-              zoom={zoom}
-              onZoomIn={handleZoomIn}
-              onZoomOut={handleZoomOut}
-              onResetView={handleResetView}
-              onFitToCanvas={handleFitToCanvas}
-            />
-            
-            {showMiniMap && (
-              <MiniMap
-                fabricCanvas={fabricCanvasRef.current}
-                zoom={zoom}
-                panX={panX}
-                panY={panY}
-                onViewportChange={handleViewportChange}
-              />
-            )}
-          </div>
-          
-          <div className="mt-2 text-sm text-muted-foreground">
-            Hold <kbd className="px-2 py-1 bg-muted rounded text-xs">Space</kbd> + drag to pan
-          </div>
+      <header className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <Button variant={tool === "draw" ? "hero" : "secondary"} onClick={() => setTool("draw")} aria-label="Pen tool">
+            <PenLine /> Pen
+          </Button>
+          <Button variant={tool === "select" ? "default" : "secondary"} onClick={() => setTool("select")} aria-label="Select tool">
+            <MousePointer /> Select
+          </Button>
+          <Button variant={tool === "lasso" ? "default" : "secondary"} onClick={() => setTool("lasso")} aria-label="Lasso tool">
+            <Lasso /> Lasso
+          </Button>
+          <Button variant="secondary" onClick={addRect} aria-label="Add rectangle">
+            <Square />
+          </Button>
+          <Button variant="secondary" onClick={addCircle} aria-label="Add circle">
+            <CircleIcon />
+          </Button>
         </div>
 
-        <LayerPanel
-          layers={layers}
-          activeLayerId={activeLayerId}
-          onLayerSelect={handleLayerSelect}
-          onLayerAdd={handleLayerAdd}
-          onLayerDelete={handleLayerDelete}
-          onLayerToggleVisible={handleLayerToggleVisible}
-          onLayerToggleLock={handleLayerToggleLock}
-          onLayerReorder={handleLayerReorder}
-          fabricCanvas={fabricCanvasRef.current}
-        />
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <label htmlFor="color" className="text-sm text-muted-foreground">Ink</label>
+            <Input id="color" type="color" value={color} onChange={(e) => setColor(e.target.value)} className="h-10 w-12 p-1" aria-label="Choose color" />
+          </div>
+          <div className="flex items-center gap-2 w-40">
+            <label className="text-sm text-muted-foreground">Width</label>
+            <Slider aria-label="Brush width" value={[width]} min={1} max={36} step={1} onValueChange={(v) => setWidth(v[0] ?? width)} />
+          </div>
+          <div className="flex items-center gap-2 w-48">
+            <label className="text-sm text-muted-foreground">Smooth</label>
+            <Slider aria-label="Smoothing" value={[smoothing]} min={0} max={1} step={0.05} onValueChange={(v) => setSmoothing(v[0] ?? smoothing)} />
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" onClick={undo} aria-label="Undo">
+              <Undo2 />
+            </Button>
+            <Button variant="ghost" onClick={clearAll} aria-label="Clear">
+              <Trash2 />
+            </Button>
+            <Button variant="hero" onClick={exportPNG} aria-label="Export as PNG">
+              <Download /> Export
+            </Button>
+          </div>
+        </div>
+      </header>
+
+      <div ref={containerRef} className="relative w-full rounded-lg border bg-card shadow-elegant overflow-hidden">
+        <canvas ref={fabricElRef} className="block w-full h-auto" />
+        <canvas ref={overlayRef} className="absolute inset-0 block" />
       </div>
     </section>
   );
