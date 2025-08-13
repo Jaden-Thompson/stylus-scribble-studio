@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { Canvas as FabricCanvas, Circle, Rect, Path as FabricPath } from "fabric";
+import { Canvas as FabricCanvas, Circle, Rect, Path as FabricPath, ActiveSelection } from "fabric";
 import getStroke from "perfect-freehand";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
-import { PenLine, MousePointer, Square, Circle as CircleIcon, Undo2, Download, Trash2 } from "lucide-react";
+import { PenLine, MousePointer, Square, Circle as CircleIcon, Undo2, Download, Trash2, Lasso } from "lucide-react";
 
-export type Tool = "select" | "draw" | "rectangle" | "circle";
+export type Tool = "select" | "draw" | "rectangle" | "circle" | "lasso";
 
 type Pt = { x: number; y: number; pressure: number; t: number };
 
@@ -110,9 +110,14 @@ export const CanvasBoard = () => {
     const fabric = fabricCanvasRef.current;
     if (!fabric) return;
     const drawing = tool === "draw";
-    fabric.selection = !drawing;
-    fabric.skipTargetFind = drawing;
-    fabric.defaultCursor = drawing ? "crosshair" : "default";
+    const selecting = tool === "lasso";
+    fabric.selection = !drawing && !selecting;
+    fabric.skipTargetFind = drawing || selecting;
+    fabric.defaultCursor = drawing ? "crosshair" : selecting ? "crosshair" : "default";
+    if (selecting) {
+      fabric.selectionColor = 'rgba(59, 130, 246, 0.1)';
+      fabric.selectionBorderColor = '#3b82f6';
+    }
     fabric.renderAll();
   }, [tool]);
 
@@ -156,22 +161,48 @@ export const CanvasBoard = () => {
     };
 
     const onPointerDown = (e: PointerEvent) => {
-      if (tool !== "draw") return;
-      overlay.setPointerCapture?.(e.pointerId);
-      drawingRef.current = true;
-      pointsRef.current = [];
-      const { x, y } = getPos(e);
-      pointsRef.current.push({ x, y, pressure: e.pressure || 0.5, t: e.timeStamp });
-      ctx.clearRect(0, 0, overlay.width, overlay.height);
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      rafRef.current = requestAnimationFrame(drawPreview);
-      e.preventDefault();
+      if (tool === "draw") {
+        overlay.setPointerCapture?.(e.pointerId);
+        drawingRef.current = true;
+        pointsRef.current = [];
+        const { x, y } = getPos(e);
+        pointsRef.current.push({ x, y, pressure: e.pressure || 0.5, t: e.timeStamp });
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+        if (rafRef.current) cancelAnimationFrame(rafRef.current);
+        rafRef.current = requestAnimationFrame(drawPreview);
+        e.preventDefault();
+      } else if (tool === "lasso") {
+        overlay.setPointerCapture?.(e.pointerId);
+        drawingRef.current = true;
+        pointsRef.current = [];
+        const { x, y } = getPos(e);
+        pointsRef.current.push({ x, y, pressure: 0.5, t: e.timeStamp });
+        e.preventDefault();
+      }
     };
 
     const onPointerMove = (e: PointerEvent) => {
-      if (!drawingRef.current || tool !== "draw") return;
+      if (!drawingRef.current) return;
       const { x, y } = getPos(e);
-      pointsRef.current.push({ x, y, pressure: e.pressure || 0.5, t: e.timeStamp });
+      if (tool === "draw") {
+        pointsRef.current.push({ x, y, pressure: e.pressure || 0.5, t: e.timeStamp });
+      } else if (tool === "lasso") {
+        pointsRef.current.push({ x, y, pressure: 0.5, t: e.timeStamp });
+        // Draw lasso preview
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+        if (pointsRef.current.length > 1) {
+          ctx.strokeStyle = '#3b82f6';
+          ctx.lineWidth = 2;
+          ctx.setLineDash([5, 5]);
+          ctx.beginPath();
+          ctx.moveTo(pointsRef.current[0].x, pointsRef.current[0].y);
+          for (let i = 1; i < pointsRef.current.length; i++) {
+            ctx.lineTo(pointsRef.current[i].x, pointsRef.current[i].y);
+          }
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+      }
     };
 
     const finalizeStroke = () => {
@@ -201,14 +232,59 @@ export const CanvasBoard = () => {
         objectCaching: true,
       });
       fabric.add(path);
-      fabric.setActiveObject(path);
       fabric.renderAll();
     };
 
+    const finalizeLasso = () => {
+      const pts = pointsRef.current;
+      drawingRef.current = false;
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+      if (pts.length < 3) return;
+
+      // Create polygon from lasso points for selection
+      const objects = fabric.getObjects();
+      const selectedObjects: any[] = [];
+
+      objects.forEach((obj) => {
+        const objCenter = obj.getCenterPoint();
+        if (isPointInPolygon(objCenter, pts)) {
+          selectedObjects.push(obj);
+        }
+      });
+
+      if (selectedObjects.length > 0) {
+        fabric.discardActiveObject();
+        if (selectedObjects.length === 1) {
+          fabric.setActiveObject(selectedObjects[0]);
+        } else {
+          const selection = new ActiveSelection(selectedObjects, {
+            canvas: fabric,
+          });
+          fabric.setActiveObject(selection);
+        }
+        fabric.renderAll();
+      }
+    };
+
+    const isPointInPolygon = (point: { x: number; y: number }, polygon: Pt[]) => {
+      let inside = false;
+      for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+        if (((polygon[i].y > point.y) !== (polygon[j].y > point.y)) &&
+            (point.x < (polygon[j].x - polygon[i].x) * (point.y - polygon[i].y) / (polygon[j].y - polygon[i].y) + polygon[i].x)) {
+          inside = !inside;
+        }
+      }
+      return inside;
+    };
+
     const onPointerUp = (e: PointerEvent) => {
-      if (tool !== "draw") return;
-      finalizeStroke();
-      overlay.releasePointerCapture?.(e.pointerId);
+      if (tool === "draw") {
+        finalizeStroke();
+        overlay.releasePointerCapture?.(e.pointerId);
+      } else if (tool === "lasso") {
+        finalizeLasso();
+        overlay.releasePointerCapture?.(e.pointerId);
+      }
     };
 
     overlay.addEventListener("pointerdown", onPointerDown);
@@ -283,6 +359,9 @@ export const CanvasBoard = () => {
           </Button>
           <Button variant={tool === "select" ? "default" : "secondary"} onClick={() => setTool("select")} aria-label="Select tool">
             <MousePointer /> Select
+          </Button>
+          <Button variant={tool === "lasso" ? "default" : "secondary"} onClick={() => setTool("lasso")} aria-label="Lasso tool">
+            <Lasso /> Lasso
           </Button>
           <Button variant="secondary" onClick={addRect} aria-label="Add rectangle">
             <Square />
