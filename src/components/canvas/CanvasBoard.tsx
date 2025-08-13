@@ -87,34 +87,46 @@ export const CanvasBoard = () => {
     const overlay = overlayRef.current;
     if (!fabric || !container || !overlay) return;
 
+    let resizeTimeout: NodeJS.Timeout;
     const resize = () => {
-      const rect = container.getBoundingClientRect();
-      const w = rect.width;
-      const h = Math.max(420, rect.width * 0.625);
+      clearTimeout(resizeTimeout);
+      resizeTimeout = setTimeout(() => {
+        const rect = container.getBoundingClientRect();
+        const w = rect.width;
+        const h = Math.max(420, rect.width * 0.625);
 
-      fabric.setDimensions({ width: w, height: h });
+        fabric.setDimensions({ width: w, height: h });
 
-      const ratio = Math.max(window.devicePixelRatio || 1, 1);
-      overlay.width = Math.floor(w * ratio);
-      overlay.height = Math.floor(h * ratio);
-      overlay.style.width = `${w}px`;
-      overlay.style.height = `${h}px`;
+        const ratio = Math.max(window.devicePixelRatio || 1, 1);
+        overlay.width = Math.floor(w * ratio);
+        overlay.height = Math.floor(h * ratio);
+        overlay.style.width = `${w}px`;
+        overlay.style.height = `${h}px`;
 
-      const ctx = overlayCtxRef.current;
-      if (ctx) {
-        ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-        ctx.clearRect(0, 0, w, h);
-      }
-      fabric.renderAll();
+        const ctx = overlayCtxRef.current;
+        if (ctx) {
+          ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+          ctx.clearRect(0, 0, w, h);
+        }
+        fabric.renderAll();
+      }, 100);
     };
 
     resize();
-    const ro = new ResizeObserver(resize);
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.contentBoxSize) {
+          resize();
+          break;
+        }
+      }
+    });
     ro.observe(container);
     window.addEventListener("resize", resize);
     return () => {
       ro.disconnect();
       window.removeEventListener("resize", resize);
+      clearTimeout(resizeTimeout);
     };
   }, []);
 
@@ -134,23 +146,28 @@ export const CanvasBoard = () => {
     fabric.renderAll();
   }, [tool]);
 
-  // Zoom & Pan functionality
+  // Zoom & Pan functionality with throttling
   useEffect(() => {
     const fabric = fabricCanvasRef.current;
     if (!fabric) return;
 
+    let transformTimeout: NodeJS.Timeout;
     const updateTransform = () => {
-      fabric.setViewportTransform([zoom, 0, 0, zoom, panX, panY]);
-      fabric.renderAll();
+      clearTimeout(transformTimeout);
+      transformTimeout = setTimeout(() => {
+        fabric.setViewportTransform([zoom, 0, 0, zoom, panX, panY]);
+        fabric.renderAll();
+      }, 16); // ~60fps
     };
 
     updateTransform();
+    return () => clearTimeout(transformTimeout);
   }, [zoom, panX, panY]);
 
   // Keyboard controls for pan and zoom
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.code === "Space" && !isPanning) {
+      if (e.code === "Space" && !isPanning && !drawingRef.current) {
         e.preventDefault();
         setIsPanning(true);
         const fabric = fabricCanvasRef.current;
@@ -182,17 +199,21 @@ export const CanvasBoard = () => {
     };
   }, [isPanning, tool]);
 
-  // Mouse wheel zoom
+  // Mouse wheel zoom with throttling
   useEffect(() => {
     const fabric = fabricCanvasRef.current;
     if (!fabric) return;
 
+    let wheelTimeout: NodeJS.Timeout;
     const handleWheel = (e: WheelEvent) => {
       e.preventDefault();
-      const delta = e.deltaY;
-      const zoomStep = 0.1;
-      const newZoom = Math.max(0.1, Math.min(5, zoom + (delta > 0 ? -zoomStep : zoomStep)));
-      setZoom(newZoom);
+      clearTimeout(wheelTimeout);
+      wheelTimeout = setTimeout(() => {
+        const delta = e.deltaY;
+        const zoomStep = 0.1;
+        const newZoom = Math.max(0.1, Math.min(5, zoom + (delta > 0 ? -zoomStep : zoomStep)));
+        setZoom(newZoom);
+      }, 16);
     };
 
     const canvas = fabric.upperCanvasEl;
@@ -200,6 +221,7 @@ export const CanvasBoard = () => {
 
     return () => {
       canvas.removeEventListener("wheel", handleWheel);
+      clearTimeout(wheelTimeout);
     };
   }, [zoom]);
 
@@ -217,8 +239,17 @@ export const CanvasBoard = () => {
 
     const drawPreview = () => {
       const pts = pointsRef.current;
-      if (!pts.length) return;
-      ctx.clearRect(0, 0, overlay.width, overlay.height);
+      if (!pts.length || !drawingRef.current) return;
+      
+      const canvas = overlayRef.current;
+      const rect = canvas?.getBoundingClientRect();
+      if (!canvas || !rect) return;
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      
+      // Only calculate stroke if we have enough points
+      if (pts.length < 2) return;
+      
       const stroke = getStroke(
         pts.map((p) => [p.x, p.y, p.pressure] as [number, number, number]),
         {
@@ -230,7 +261,9 @@ export const CanvasBoard = () => {
           simulatePressure: false,
         }
       );
+      
       if (!stroke.length) return;
+      
       ctx.fillStyle = color;
       ctx.beginPath();
       ctx.moveTo(stroke[0][0], stroke[0][1]);
@@ -239,7 +272,6 @@ export const CanvasBoard = () => {
       }
       ctx.closePath();
       ctx.fill();
-      rafRef.current = requestAnimationFrame(drawPreview);
     };
 
     const onPointerDown = (e: PointerEvent) => {
@@ -257,7 +289,7 @@ export const CanvasBoard = () => {
         pointsRef.current.push({ x, y, pressure: e.pressure || 0.5, t: e.timeStamp });
         ctx.clearRect(0, 0, overlay.width, overlay.height);
         if (rafRef.current) cancelAnimationFrame(rafRef.current);
-        rafRef.current = requestAnimationFrame(drawPreview);
+        drawPreview();
         e.preventDefault();
       } else if (tool === "lasso") {
         overlay.setPointerCapture?.(e.pointerId);
@@ -283,6 +315,9 @@ export const CanvasBoard = () => {
         pointsRef.current = [{ x, y, pressure: 0.5, t: e.timeStamp }];
       } else if (tool === "draw") {
         pointsRef.current.push({ x, y, pressure: e.pressure || 0.5, t: e.timeStamp });
+        // Throttle preview updates for better performance
+        if (rafRef.current) cancelAnimationFrame(rafRef.current);
+        rafRef.current = requestAnimationFrame(drawPreview);
       } else if (tool === "lasso") {
         pointsRef.current.push({ x, y, pressure: 0.5, t: e.timeStamp });
         // Draw lasso preview
@@ -305,8 +340,10 @@ export const CanvasBoard = () => {
     const finalizeStroke = () => {
       const pts = pointsRef.current;
       drawingRef.current = false;
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
       ctx.clearRect(0, 0, overlay.width, overlay.height);
       if (pts.length < 2) return;
 
